@@ -111,7 +111,7 @@ def map_model(claude_model: str) -> str:
         "claude-3-5-sonnet-latest": "claude-sonnet-4-5",
         "claude-3-5-sonnet": "claude-sonnet-4-5",
         # Claude 4.5 Sonnet (Official ID from screenshot)
-        "claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
+        "claude-sonnet-4-5-20250929": "claude-sonnet-4-5-thinking", # Align with Rust: force thinking
         "claude-sonnet-4.5": "claude-sonnet-4-5",
         "claude-sonnet-4-5": "claude-sonnet-4-5", # Short alias
         
