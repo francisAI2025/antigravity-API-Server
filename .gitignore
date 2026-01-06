@@ -1,6 +1,3 @@
-# 敏感配置 - 包含 refresh_token
-config.json
-
 # 日志
 *.log
 /tmp/

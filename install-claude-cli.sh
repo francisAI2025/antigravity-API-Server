@@ -185,7 +185,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 # 调用 start.sh
 cd "$SCRIPT_DIR"
-source start.sh
+source start-server.sh
 
 # 检查是否成功
 if [ $? -ne 0 ]; then

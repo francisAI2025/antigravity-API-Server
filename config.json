@@ -1,5 +1,5 @@
 {
     "refresh_token": "",
     "port": 1234,
-    "default_model": "gemini-2.5-flash"
+    "default_model": "claude-4-5-opus"
 }
