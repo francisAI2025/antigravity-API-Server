@@ -107,6 +107,23 @@ def map_model(claude_model: str) -> str:
     return mappings.get(claude_model, claude_model)
 
 # ============ 格式转换 ============
+def transform_tools(tools: List[dict]) -> List[dict]:
+    """Claude 工具定义 -> Gemini 工具定义"""
+    if not tools:
+        return None
+        
+    function_declarations = []
+    for tool in tools:
+        decl = {
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+        }
+        if "input_schema" in tool:
+            decl["parameters"] = tool["input_schema"]
+        function_declarations.append(decl)
+        
+    return [{"function_declarations": function_declarations}]
+
 def claude_to_gemini(request: dict, project_id: str) -> dict:
     """Claude 请求格式 -> Gemini v1internal 格式"""
     contents = []
@@ -115,24 +132,49 @@ def claude_to_gemini(request: dict, project_id: str) -> dict:
         role = "model" if msg["role"] == "assistant" else msg["role"]
         content = msg.get("content", "")
         
+        parts = []
+        # 处理内容（可能是字符串或数组）
         if isinstance(content, str):
             parts = [{"text": content}]
         elif isinstance(content, list):
-            parts = []
             for block in content:
                 if isinstance(block, dict):
                     if block.get("type") == "text":
                         parts.append({"text": block.get("text", "")})
+                    elif block.get("type") == "tool_use":
+                        # Assistant 想要调用工具 -> Gemini functionCall
+                        parts.append({
+                            "functionCall": {
+                                "name": block["name"],
+                                "args": block["input"]
+                            }
+                        })
                     elif block.get("type") == "tool_result":
-                        parts.append({"text": f"[Tool Result: {block.get('content', '')}]"})
+                        # Tool 执行结果 -> Gemini functionResponse
+                        # 注意：Gemini 要求 functionResponse 单独作为一条消息或在 user 消息中
+                        parts.append({
+                            "functionResponse": {
+                                "name": block.get("name", "unknown_tool"), # Claude tool_result 通常不带 name，可能需要记录上下文或从 content_block 中推断，这里需要注意
+                                "response": {
+                                    "name": block.get("name", "unknown_tool"),
+                                    "content": block.get("content", "") 
+                                }
+                            }
+                        })
+                        # 对于 Antigravity/CloudCode API，tool_result 通常也是 "user" role
                 else:
                     parts.append({"text": str(block)})
         else:
             parts = [{"text": str(content)}]
         
         if parts:
-            contents.append({"role": role, "parts": parts})
-    
+            # 修正: Gemini 中 functionResponse 应该是 'function' role 或者是 user的一部分?
+            # Cloud Code API 中通常 user 角色发送 functionResponse
+             contents.append({"role": role, "parts": parts})
+
+    # 处理 tool_result 的特殊情况：Claude 中 tool_result 是 user 消息
+    # 我们的循环已经处理了 role 映射
+
     system_instruction = None
     if request.get("system"):
         system_text = request["system"]
@@ -156,6 +198,12 @@ def claude_to_gemini(request: dict, project_id: str) -> dict:
     
     if system_instruction:
         inner_request["systemInstruction"] = system_instruction
+
+    # 处理 Tools 定义
+    if "tools" in request:
+        inner_request["tools"] = transform_tools(request["tools"])
+        # 强制工具使用模式
+        # inner_request["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
     
     model = map_model(request.get("model", "claude-sonnet-4-20250514"))
     
@@ -176,11 +224,24 @@ def gemini_to_claude(gemini_response: dict, model: str) -> dict:
     candidates = gemini_response.get("candidates", [])
     
     content = []
+    stop_reason = "end_turn"
+
     if candidates:
-        parts = candidates[0].get("content", {}).get("parts", [])
+        candidate = candidates[0]
+        parts = candidate.get("content", {}).get("parts", [])
         for part in parts:
             if "text" in part:
                 content.append({"type": "text", "text": part["text"]})
+            elif "functionCall" in part:
+                # Gemini 想要调用工具 -> Claude tool_use
+                fc = part["functionCall"]
+                content.append({
+                    "type": "tool_use",
+                    "id": f"call_{uuid.uuid4().hex[:16]}", # Gemini 不返回 call_id，需要生成
+                    "name": fc["name"],
+                    "input": fc["args"]
+                })
+                stop_reason = "tool_use"
     
     usage_metadata = gemini_response.get("usageMetadata", {})
     
@@ -190,7 +251,7 @@ def gemini_to_claude(gemini_response: dict, model: str) -> dict:
         "role": "assistant",
         "content": content,
         "model": model,
-        "stop_reason": "end_turn",
+        "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
             "input_tokens": usage_metadata.get("promptTokenCount", 0),
@@ -210,6 +271,8 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 1.0
     stream: Optional[bool] = False
     system: Optional[Any] = None
+    tools: Optional[List[Dict]] = None
+    tool_choice: Optional[Any] = None
 
 # ============ API 端点 ============
 @app.get("/health")
@@ -264,7 +327,11 @@ async def messages(request: ChatRequest):
                         
                         msg_id = f"msg_{uuid.uuid4().hex[:24]}"
                         yield f'data: {{"type":"message_start","message":{{"id":"{msg_id}","type":"message","role":"assistant","content":[],"model":"{request.model}"}}}}\n\n'
-                        yield f'data: {{"type":"content_block_start","index":0,"content_block":{{"type":"text","text":""}}}}\n\n'
+                        
+                        # 内容块索引
+                        block_index = 0
+                        # 记录当前是否正在流式传输文本块
+                        in_text_block = False
                         
                         async for line in resp.aiter_lines():
                             if line.startswith("data: "):
@@ -274,14 +341,48 @@ async def messages(request: ChatRequest):
                                     if candidates:
                                         parts = candidates[0].get("content", {}).get("parts", [])
                                         for part in parts:
+                                            # 处理文本
                                             if "text" in part:
                                                 text = part["text"]
+                                                if not in_text_block:
+                                                    yield f'data: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"text","text":""}}}}\n\n'
+                                                    in_text_block = True
+                                                
                                                 escaped = json.dumps(text)
-                                                yield f'data: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":{escaped}}}}}\n\n'
+                                                yield f'data: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"text_delta","text":{escaped}}}}}\n\n'
+                                            
+                                            # 处理函数调用
+                                            elif "functionCall" in part:
+                                                if in_text_block:
+                                                    yield f'data: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                                    block_index += 1
+                                                    in_text_block = False
+                                                
+                                                fc = part["functionCall"]
+                                                tool_id = f"call_{uuid.uuid4().hex[:16]}"
+                                                name_json = json.dumps(fc["name"])
+                                                
+                                                # 开始 Tool Block
+                                                yield f'data: {{"type":"content_block_start","index":{block_index},"content_block":{{"type":"tool_use","id":"{tool_id}","name":{name_json},"input":{{}}}}}}\n\n'
+                                                
+                                                # 发送参数 (Gemini 返回的是对象，我们转回 JSON 字符串发送)
+                                                args_json = json.dumps(fc["args"])
+                                                escaped_args = json.dumps(args_json) # 再次转义作为 JSON 字符串的值
+                                                yield f'data: {{"type":"content_block_delta","index":{block_index},"delta":{{"type":"input_json_delta","partial_json":{escaped_args}}}}}\n\n'
+                                                
+                                                # 结束 Tool Block
+                                                yield f'data: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                                                block_index += 1
+                                                
+                                                # 记录停止原因
+                                                yield f'data: {{"type":"message_delta","delta":{{"stop_reason":"tool_use"}}}}\n\n'
+
                                 except Exception as e:
                                     print(f"[Stream Parse Error] {e}")
                         
-                        yield f'data: {{"type":"content_block_stop","index":0}}\n\n'
+                        if in_text_block:
+                            yield f'data: {{"type":"content_block_stop","index":{block_index}}}\n\n'
+                        
                         yield f'data: {{"type":"message_delta","delta":{{"stop_reason":"end_turn"}}}}\n\n'
                         yield f'data: {{"type":"message_stop"}}\n\n'
                 except Exception as e:
