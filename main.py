@@ -129,6 +129,18 @@ def map_model(claude_model: str) -> str:
         "claude-opus-4-5": "claude-opus-4-5-thinking", # Short alias
         "claude-opus-4-5-thinking": "claude-opus-4-5-thinking", # Internal ID direct pass
         
+        # Sonnet Thinking (from screenshot)
+        "claude-sonnet-4-5-thinking": "claude-sonnet-4-5-thinking",
+
+        # Gemini Family (Explicit support from screenshot)
+        "gemini-3-flash": "gemini-3-flash",
+        "gemini-3-pro-high": "gemini-3-pro-high",
+        "gemini-3-pro-low": "gemini-3-pro-low",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+        "gemini-2.5-pro": "gemini-2.5-pro",
+        "gemini-2.5-flash-thinking": "gemini-2.5-flash-thinking",
+        
         # 兼容性映射
         "gpt-4": "gemini-2.5-pro",
         "gpt-4o": "gemini-2.5-pro", 
