@@ -98,41 +98,63 @@ async def get_project_id() -> str:
 # ============ 模型映射 ============
 # ============ 模型映射 ============
 def map_model(claude_model: str) -> str:
-    """Claude 模型名 -> Gemini 模型名"""
-    # 归一化：一些客户端会发送带版本号的模型名
-    if "claude-3-5-sonnet" in claude_model:
-        return "claude-3-5-sonnet-20241022"
-    if "claude-3-5-haiku" in claude_model:
-        return "claude-3-5-haiku-20241022"
-    if "gemini-2.5-flash" in claude_model:
-        return "gemini-2.5-flash"
-    if "gemini-2.5-pro" in claude_model:
-        return "gemini-2.5-pro"
-    
-    # 智能关键词匹配
-    if "opus" in claude_model:
-        mapped = "gemini-2.5-pro"
-        print(f"\033[93m[Model Warning] 请求模型 '{claude_model}' 映射到高性能模型 '{mapped}'\033[0m")
+    """Claude 模型名 -> Google Internal 模型名"""
+    # 0. 预处理：转小写
+    model = claude_model.lower()
+
+    # 1. 验证过的有效内部 ID 映射表 (from Antigravity-Manager)
+    # 这些是 cloudcode-pa API 真正接受的 ID
+    valid_mappings = {
+        # Claude 3.5 Sonnet 系列 -> claude-sonnet-4-5
+        "claude-3-5-sonnet-20241022": "claude-sonnet-4-5",
+        "claude-3-5-sonnet-20240620": "claude-sonnet-4-5",
+        "claude-3-5-sonnet-latest": "claude-sonnet-4-5",
+        "claude-3-5-sonnet": "claude-sonnet-4-5",
+        
+        # Claude 3 Haiku 系列 -> claude-sonnet-4-5 (智能升级)
+        "claude-3-haiku-20240307": "claude-sonnet-4-5",
+        "claude-3-haiku": "claude-sonnet-4-5",
+
+        # Opus 系列 -> claude-opus-4-5-thinking
+        "claude-3-opus-20240229": "claude-opus-4-5-thinking",
+        "claude-3-opus": "claude-opus-4-5-thinking",
+        "claude-opus-4-5-20251101": "claude-opus-4-5-thinking", # 用户指定的 ID
+        
+        # 兼容性映射
+        "gpt-4": "gemini-2.5-pro",
+        "gpt-4o": "gemini-2.5-pro", 
+        "gpt-3.5-turbo": "gemini-2.5-flash",
+    }
+
+    # 2. 精确匹配
+    if model in valid_mappings:
+        mapped = valid_mappings[model]
+        print(f"\033[92m[Model Map] '{claude_model}' -> '{mapped}' (Exact Match)\033[0m")
+        return mapped
+
+    # 3. 智能关键词匹配 (Fuzzy Match)
+    if "gemini" in model:
+        # 透传 Gemini 模型 (假设用户知道自己在做什么)
+        return claude_model
+
+    if "opus" in model:
+        mapped = "claude-opus-4-5-thinking"
+        print(f"\033[93m[Model Map] '{claude_model}' -> '{mapped}' (Keyword: opus)\033[0m")
         return mapped
         
-    if "sonnet" in claude_model:
-        if "3-5" in claude_model:
-            return "claude-3-5-sonnet-20241022"
-        return "claude-sonnet-4-20250514"
+    if "sonnet" in model:
+        mapped = "claude-sonnet-4-5"
+        print(f"\033[93m[Model Map] '{claude_model}' -> '{mapped}' (Keyword: sonnet)\033[0m")
+        return mapped
         
-    mappings = {
-        "claude-sonnet-4-20250514": "claude-sonnet-4-20250514",
-        "claude-3-opus": "gemini-2.5-pro",
-        "claude-4-5-opus": "gemini-2.5-pro",
-    }
-    
-    result = mappings.get(claude_model)
-    if result:
-        return result
-        
-    # 默认 Fallback
+    if "haiku" in model:
+        mapped = "claude-sonnet-4-5" # 升级 Haiku 到 Sonnet 4.5
+        print(f"\033[93m[Model Map] '{claude_model}' -> '{mapped}' (Keyword: haiku -> Upgrade)\033[0m")
+        return mapped
+
+    # 4. 默认 Fallback
     fallback = "gemini-2.5-flash"
-    print(f"\033[93m[Model Warning] 未知模型 '{claude_model}' 不存在，已自动回退到 '{fallback}'\033[0m")
+    print(f"\033[91m[Model Map] Unknown model '{claude_model}'. Fallback -> '{fallback}'\033[0m")
     return fallback
 
 # ============ 格式转换 ============
@@ -256,8 +278,19 @@ def transform_tools(tools: List[dict]) -> List[dict]:
         }
         if "input_schema" in tool:
             params = tool["input_schema"]
+            # Debug: 打印原始 schema 中是否包含 $schema
+            if "$schema" in params:
+                print(f"[DEBUG] Found $schema in tool '{tool['name']}' BEFORE cleaning")
+            
             # 使用深度清理逻辑
             clean_json_schema(params)
+            
+            # Debug: 打印清理后的 schema 中是否包含 $schema
+            if "$schema" in params:
+                 print(f"[ERROR] $schema STILL present in tool '{tool['name']}' AFTER cleaning!")
+            else:
+                 print(f"[DEBUG] $schema successfully removed from '{tool['name']}'")
+            
             decl["parameters"] = params
             
         function_declarations.append(decl)
