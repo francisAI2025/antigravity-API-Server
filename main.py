@@ -136,6 +136,18 @@ def map_model(claude_model: str) -> str:
     return fallback
 
 # ============ 格式转换 ============
+def remove_keys(obj, keys_to_remove):
+    """递归移除字典中的指定键"""
+    if isinstance(obj, dict):
+        return {
+            k: remove_keys(v, keys_to_remove)
+            for k, v in obj.items()
+            if k not in keys_to_remove
+        }
+    elif isinstance(obj, list):
+        return [remove_keys(item, keys_to_remove) for item in obj]
+    return obj
+
 def transform_tools(tools: List[dict]) -> List[dict]:
     """Claude 工具定义 -> Gemini 工具定义"""
     if not tools:
@@ -148,7 +160,11 @@ def transform_tools(tools: List[dict]) -> List[dict]:
             "description": tool.get("description", ""),
         }
         if "input_schema" in tool:
-            decl["parameters"] = tool["input_schema"]
+            # Gemini API 不支持 $schema 字段，必须移除
+            # 同时移除 possible additional properties (optional but strict)
+            params = tool["input_schema"]
+            decl["parameters"] = remove_keys(params, ["$schema"])
+            
         function_declarations.append(decl)
         
     return [{"function_declarations": function_declarations}]
