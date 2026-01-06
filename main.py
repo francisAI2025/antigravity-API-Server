@@ -136,17 +136,112 @@ def map_model(claude_model: str) -> str:
     return fallback
 
 # ============ 格式转换 ============
-def remove_keys(obj, keys_to_remove):
-    """递归移除字典中的指定键"""
-    if isinstance(obj, dict):
-        return {
-            k: remove_keys(v, keys_to_remove)
-            for k, v in obj.items()
-            if k not in keys_to_remove
+# ============ 格式转换 ============
+
+def flatten_refs(schema: dict, defs: dict):
+    """递归展开 $ref"""
+    if "$ref" in schema:
+        ref_path = schema.pop("$ref")
+        ref_name = ref_path.split("/")[-1]
+        if ref_name in defs:
+            # 合并定义
+            def_schema = defs[ref_name]
+            for k, v in def_schema.items():
+                if k not in schema:
+                    schema[k] = v
+            # 递归处理可能引入的新 $ref
+            flatten_refs(schema, defs)
+    
+    for v in schema.values():
+        if isinstance(v, dict):
+            flatten_refs(v, defs)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict):
+                    flatten_refs(item, defs)
+
+def clean_json_schema(value: Any):
+    """递归清理 JSON Schema 以符合 Gemini 接口要求"""
+    if isinstance(value, dict):
+        # 0. 预处理：展开 $defs (仅在顶层或有 definitions 的层级)
+        defs = {}
+        if "$defs" in value:
+            defs.update(value.pop("$defs"))
+        if "definitions" in value:
+            defs.update(value.pop("definitions"))
+            
+        if defs:
+            flatten_refs(value, defs)
+
+        # 1. 深度递归处理
+        for v in value.values():
+            clean_json_schema(v)
+            
+        # 2. 收集并处理校验字段 (迁移到描述)
+        validation_fields = {
+            "pattern": "pattern",
+            "minLength": "minLen",
+            "maxLength": "maxLen",
+            "minimum": "min",
+            "maximum": "max",
+            "minItems": "minItems",
+            "maxItems": "maxItems",
+            "exclusiveMinimum": "exclMin",
+            "exclusiveMaximum": "exclMax",
+            "multipleOf": "multipleOf",
+            "format": "format",
         }
-    elif isinstance(obj, list):
-        return [remove_keys(item, keys_to_remove) for item in obj]
-    return obj
+        
+        constraints = []
+        for field, label in validation_fields.items():
+            if field in value:
+                val = value.pop(field)
+                if isinstance(val, (str, int, float, bool)):
+                    constraints.append(f"{label}: {val}")
+        
+        # 3. 追加到描述
+        if constraints:
+            suffix = f" [Constraint: {', '.join(constraints)}]"
+            desc = value.get("description", "")
+            value["description"] = desc + suffix
+
+        # 4. 移除不支持的字段 (黑名单)
+        hard_remove_fields = [
+            "$schema", "$id", "additionalProperties", "enumCaseInsensitive",
+            "enumNormalizeWhitespace", "uniqueItems", "default", "const",
+            "examples", "propertyNames", "anyOf", "oneOf", "allOf",
+            "not", "if", "then", "else", "dependencies",
+            "dependentSchemas", "dependentRequired", "cache_control",
+            "contentEncoding", "contentMediaType", "deprecated",
+            "readOnly", "writeOnly"
+        ]
+        for field in hard_remove_fields:
+            if field in value:
+                value.pop(field)
+
+        # 5. 清理 required (确保只包含存在的 properties)
+        if "required" in value and "properties" in value:
+            valid_props = set(value["properties"].keys())
+            value["required"] = [k for k in value["required"] if k in valid_props]
+            if not value["required"]:
+                value.pop("required") # 如果为空则移除
+
+        # 6. 处理 type 字段
+        if "type" in value:
+            if isinstance(value["type"], str):
+                value["type"] = value["type"].lower()
+            elif isinstance(value["type"], list):
+                # 联合类型 ["string", "null"] -> "string"
+                selected = "string"
+                for t in value["type"]:
+                    if t != "null":
+                        selected = t.lower()
+                        break
+                value["type"] = selected
+                
+    elif isinstance(value, list):
+        for item in value:
+            clean_json_schema(item)
 
 def transform_tools(tools: List[dict]) -> List[dict]:
     """Claude 工具定义 -> Gemini 工具定义"""
@@ -160,10 +255,10 @@ def transform_tools(tools: List[dict]) -> List[dict]:
             "description": tool.get("description", ""),
         }
         if "input_schema" in tool:
-            # Gemini API 不支持 $schema 字段，必须移除
-            # 同时移除 possible additional properties (optional but strict)
             params = tool["input_schema"]
-            decl["parameters"] = remove_keys(params, ["$schema"])
+            # 使用深度清理逻辑
+            clean_json_schema(params)
+            decl["parameters"] = params
             
         function_declarations.append(decl)
         
