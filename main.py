@@ -96,15 +96,44 @@ async def get_project_id() -> str:
     return _project_id
 
 # ============ 模型映射 ============
+# ============ 模型映射 ============
 def map_model(claude_model: str) -> str:
     """Claude 模型名 -> Gemini 模型名"""
+    # 归一化：一些客户端会发送带版本号的模型名
+    if "claude-3-5-sonnet" in claude_model:
+        return "claude-3-5-sonnet-20241022"
+    if "claude-3-5-haiku" in claude_model:
+        return "claude-3-5-haiku-20241022"
+    if "gemini-2.5-flash" in claude_model:
+        return "gemini-2.5-flash"
+    if "gemini-2.5-pro" in claude_model:
+        return "gemini-2.5-pro"
+    
+    # 智能关键词匹配
+    if "opus" in claude_model:
+        mapped = "gemini-2.5-pro"
+        print(f"\033[93m[Model Warning] 请求模型 '{claude_model}' 映射到高性能模型 '{mapped}'\033[0m")
+        return mapped
+        
+    if "sonnet" in claude_model:
+        if "3-5" in claude_model:
+            return "claude-3-5-sonnet-20241022"
+        return "claude-sonnet-4-20250514"
+        
     mappings = {
         "claude-sonnet-4-20250514": "claude-sonnet-4-20250514",
-        "claude-3-5-sonnet": "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku": "claude-3-5-haiku-20241022",
         "claude-3-opus": "gemini-2.5-pro",
+        "claude-4-5-opus": "gemini-2.5-pro",
     }
-    return mappings.get(claude_model, claude_model)
+    
+    result = mappings.get(claude_model)
+    if result:
+        return result
+        
+    # 默认 Fallback
+    fallback = "gemini-2.5-flash"
+    print(f"\033[93m[Model Warning] 未知模型 '{claude_model}' 不存在，已自动回退到 '{fallback}'\033[0m")
+    return fallback
 
 # ============ 格式转换 ============
 def transform_tools(tools: List[dict]) -> List[dict]:
