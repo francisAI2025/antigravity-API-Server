@@ -1,35 +1,69 @@
-# Antigravity API Server
+# 🚀 Antigravity API Server
 
-基于 [Antigravity Manager](https://github.com/lbjlaq/Antigravity-Manager) 核心逻辑的 Claude/Gemini API 代理服务器。
+**免费使用 Claude 和 Gemini 模型的 API 代理服务器**
 
-## 功能
+通过 Google Cloud Code API，将你的 Google 账号变成一个强大的 AI API 服务。
 
-- 🔐 自动获取和刷新 Google OAuth Token
-- 🔄 Anthropic Messages API 兼容格式
-- 🌐 支持 Claude Code CLI 直接使用
-- 📦 一键启动脚本
+---
 
-## 支持的模型
+## ✨ 亮点
 
-- Claude 4.5 Sonnet / Opus (Thinking)
-- Gemini 2.5 Flash / Pro
-- Gemini 3 Flash / Pro
+| 特性 | 说明 |
+|------|------|
+| 🆓 **免费** | 使用 Google 账号即可，无需付费 API Key |
+| 🤖 **多模型** | 支持 Claude 4.5、Gemini 2.5/3 等顶级模型 |
+| 🔌 **兼容** | Anthropic Messages API 格式，可直接对接 Claude Code CLI |
+| 🖥️ **自托管** | 在自己的服务器上运行，数据不经过第三方 |
 
-## 快速开始
+---
 
-### 1. 安装依赖
+## 🎯 使用场景
+
+### 1. 给 Claude Code CLI 提供免费后端
 
 ```bash
-pip install -r requirements.txt
+source start.sh  # 启动服务并设置环境变量
+claude           # 直接使用 Claude Code，无需官方 API Key
 ```
 
-### 2. 获取 Token
+### 2. 作为通用 AI API 服务
+
+```bash
+curl http://localhost:1234/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+---
+
+## 📦 支持的模型
+
+- **Claude 4.5** Sonnet / Opus (含 Thinking 模式)
+- **Gemini 3** Flash / Pro
+- **Gemini 2.5** Flash / Pro
+
+---
+
+## 🚀 快速开始
+
+### 1. 克隆项目
+
+```bash
+git clone https://github.com/francisAI2025/antigravity-API-Server.git
+cd antigravity-API-Server
+```
+
+### 2. 获取 Google OAuth Token
 
 ```bash
 python get_token.py
 ```
 
-按提示完成 Google OAuth 授权。
+按提示在浏览器中完成 Google 授权。
 
 ### 3. 启动服务
 
@@ -37,43 +71,58 @@ python get_token.py
 source start.sh
 ```
 
-### 4. 使用 Claude Code
+脚本会自动：
+- 检查并安装依赖
+- 启动 API 服务器
+- 设置环境变量（当前会话 + `/root/.env` 持久化）
+
+### 4. 开始使用
 
 ```bash
-claude
+claude  # 直接使用 Claude Code CLI
 ```
 
-## 配置说明
+---
 
-复制 `config.example.json` 为 `config.json`：
+## ⚙️ 配置
+
+复制示例配置：
 
 ```bash
 cp config.example.json config.json
 ```
 
-配置项：
+编辑 `config.json`：
 
-| 字段 | 说明 | 默认值 |
-|------|------|--------|
-| `refresh_token` | Google OAuth Refresh Token | (需获取) |
-| `port` | 监听端口 | 1234 |
-| `default_model` | 默认模型 | gemini-2.5-flash |
-
-## 原理
-
-通过 Google Cloud Code API (`cloudcode-pa.googleapis.com`) 访问 Google 托管的 Claude 和 Gemini 模型。
-
-## 文件结构
-
-```
-├── config.json          # 配置文件 (含敏感信息，已 gitignore)
-├── config.example.json  # 配置示例
-├── get_token.py         # Token 获取工具
-├── main.py              # API 服务器
-├── start.sh             # 一键启动脚本
-└── requirements.txt     # 依赖
+```json
+{
+  "refresh_token": "你的token",
+  "port": 1234,
+  "default_model": "gemini-2.5-flash"
+}
 ```
 
-## License
+---
+
+## 🔧 工作原理
+
+```
+┌─────────────────┐     ┌─────────────────────┐     ┌──────────────────┐
+│  Claude Code    │     │  Antigravity API    │     │  Google Cloud    │
+│  或其他客户端    │ ──▶ │  Server (本项目)     │ ──▶ │  Code API        │
+└─────────────────┘     └─────────────────────┘     └──────────────────┘
+                                  │
+                                  ▼
+                        ┌──────────────────┐
+                        │  Claude / Gemini │
+                        │  模型响应         │
+                        └──────────────────┘
+```
+
+本项目基于 [Antigravity Manager](https://github.com/lbjlaq/Antigravity-Manager) 的核心逻辑实现。
+
+---
+
+## 📄 License
 
 MIT
