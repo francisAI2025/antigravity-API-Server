@@ -110,10 +110,15 @@ def map_model(claude_model: str) -> str:
         "claude-3-5-sonnet-20240620": "claude-sonnet-4-5",
         "claude-3-5-sonnet-latest": "claude-sonnet-4-5",
         "claude-3-5-sonnet": "claude-sonnet-4-5",
+        # Claude 4.5 Sonnet (Official ID from screenshot)
+        "claude-sonnet-4-5-20250929": "claude-sonnet-4-5",
+        "claude-sonnet-4.5": "claude-sonnet-4-5",
         
         # Claude 3 Haiku 系列 -> claude-sonnet-4-5 (智能升级)
         "claude-3-haiku-20240307": "claude-sonnet-4-5",
         "claude-3-haiku": "claude-sonnet-4-5",
+        # Claude 4.5 Haiku (Official ID from screenshot)
+        "claude-haiku-4-5-20251001": "claude-sonnet-4-5",
 
         # Opus 系列 -> claude-opus-4-5-thinking
         "claude-3-opus-20240229": "claude-opus-4-5-thinking",
