@@ -15,6 +15,22 @@ import asyncio
 
 app = FastAPI(title="Antigravity API Server")
 
+# ============ 全局状态 ============
+import threading
+THOUGHT_SIGNATURE = None
+THOUGHT_SIGNATURE_LOCK = threading.Lock()
+
+def store_thought_signature(sig: str):
+    global THOUGHT_SIGNATURE
+    if sig:
+        with THOUGHT_SIGNATURE_LOCK:
+            THOUGHT_SIGNATURE = sig
+            # print(f"[DEBUG] Stored thought_signature: {sig[:20]}...")
+
+def get_thought_signature() -> Optional[str]:
+    with THOUGHT_SIGNATURE_LOCK:
+        return THOUGHT_SIGNATURE
+
 # ============ 配置 ============
 with open("config.json") as f:
     CONFIG = json.load(f)
@@ -318,11 +334,129 @@ def transform_tools(tools: List[dict]) -> List[dict]:
         
     return [{"function_declarations": function_declarations}]
 
-def claude_to_gemini(request: dict, project_id: str) -> dict:
-    """Claude 请求格式 -> Gemini v1internal 格式"""
-    contents = []
+def claude_to_gemini(claude_request: dict, project_id: str) -> dict:
+    """Claude 请求格式 -> Gemini 请求格式"""
+    gemini_request = {
+        "contents": [],
+        "generationConfig": {
+            "candidateCount": 1,
+            "maxOutputTokens": claude_request.get("max_tokens", 8192),
+            "temperature": claude_request.get("temperature", 1.0),
+            "stopSequences": claude_request.get("stop_sequences", [])
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
+        ]
+    }
+
+    # 1. System Prompt
+    if "system" in claude_request:
+        system_content = claude_request["system"]
+        if isinstance(system_content, str):
+            gemini_request["systemInstruction"] = {
+                "role": "system",
+                "parts": [{"text": system_content}]
+            }
+        elif isinstance(system_content, list):
+            parts = []
+            for item in system_content:
+                if item["type"] == "text":
+                    parts.append({"text": item["text"]})
+            if parts:
+                gemini_request["systemInstruction"] = {
+                    "role": "system",
+                    "parts": parts
+                }
+
+    # 2. Tools
+    if "tools" in claude_request:
+        gemini_request["tools"] = transform_tools(claude_request["tools"])
+
+    # 3. 预扫描：构建 Tool ID -> Tool Name 映射
+    tool_id_to_name = {}
+    for msg in claude_request.get("messages", []):
+        if msg["role"] == "assistant":
+            content = msg["content"]
+            if isinstance(content, list):
+                for item in content:
+                    if item["type"] == "tool_use":
+                        tool_id_to_name[item["id"]] = item["name"]
+
+    # 4. Messages Construction
+    for msg in claude_request.get("messages", []):
+        role = "user" if msg["role"] == "user" else "model"
+        parts = []
+        
+        content = msg["content"]
+        if isinstance(content, str):
+            parts.append({"text": content})
+        elif isinstance(content, list):
+            for item in content:
+                if item["type"] == "text":
+                    parts.append({"text": item["text"]})
+                elif item["type"] == "image":
+                    parts.append({
+                        "inlineData": {
+                            "mimeType": item["source"]["media_type"],
+                            "data": item["source"]["data"]
+                        }
+                    })
+                elif item["type"] == "tool_use":
+                    # Tool Call
+                    # [CRITICAL] Thinking models requires thought_signature for functionCall
+                    func_call = {
+                        "name": item["name"],
+                        "args": item["input"]
+                    }
+                    
+                    part = {"functionCall": func_call}
+                    
+                    # 尝试注入 thought_signature
+                    sig = get_thought_signature()
+                    if sig:
+                        # 注意：thoughtSignature 是 part 的一级属性，与 functionCall 平级
+                        part["thoughtSignature"] = sig
+                    
+                    parts.append(part)
+
+                elif item["type"] == "tool_result":
+                    # Tool Response
+                    tool_id = item.get("tool_use_id")
+                    tool_name = tool_id_to_name.get(tool_id, "unknown_tool")
+                    
+                    parts.append({
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {
+                                "name": tool_name,
+                                "content": item.get("content", "") 
+                            }
+                        }
+                    })
+
+        gemini_request["contents"].append({
+            "role": role,
+            "parts": parts
+        })
     
-    for msg in request.get("messages", []):
+    # 包装成 Cloud Code API 需要的格式
+    # 注意：前面的代码是转换成 contents，现在需要包装
+    # 由于原始代码结构不同，这里我们直接返回 gemini_request 的内容部分给调用者？
+    # 不，原始 claude_to_gemini 返回的是最终的大对象。
+    
+    final_request = {
+         "project": project_id,
+         "requestId": f"agent-{uuid.uuid4()}",
+         "request": gemini_request, # 这里 gemini_request 对应原始代码的 inner_request
+         "model": map_model(claude_request.get("model", "claude-sonnet-4-5")),
+         "userAgent": "antigravity",
+         "requestType": "agent"
+    }
+
+    return final_request
         role = "model" if msg["role"] == "assistant" else msg["role"]
         content = msg.get("content", "")
         
@@ -424,6 +558,11 @@ def gemini_to_claude(gemini_response: dict, model: str) -> dict:
         candidate = candidates[0]
         parts = candidate.get("content", {}).get("parts", [])
         for part in parts:
+            if "thoughtSignature" in part:
+                 store_thought_signature(part["thoughtSignature"])
+            elif "thought_signature" in part:
+                 store_thought_signature(part["thought_signature"])
+
             if "text" in part:
                 content.append({"type": "text", "text": part["text"]})
             elif "functionCall" in part:
@@ -535,6 +674,12 @@ async def messages(request: ChatRequest):
                                     if candidates:
                                         parts = candidates[0].get("content", {}).get("parts", [])
                                         for part in parts:
+                                            # [NEW] Capture thought_signature from stream chunk
+                                            if "thoughtSignature" in part:
+                                                store_thought_signature(part["thoughtSignature"])
+                                            elif "thought_signature" in part:
+                                                store_thought_signature(part["thought_signature"])
+
                                             # 处理文本
                                             if "text" in part:
                                                 text = part["text"]
