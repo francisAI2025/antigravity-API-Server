@@ -50,36 +50,43 @@ curl http://localhost:1234/v1/messages \
 
 ## 🚀 快速开始
 
-### 1. 克隆项目
+### 方式一：一键安装（推荐）
 
 ```bash
 git clone https://github.com/francisAI2025/antigravity-API-Server.git
 cd antigravity-API-Server
-```
-
-### 2. 获取 Google OAuth Token
-
-```bash
-python get_token.py
-```
-
-按提示在浏览器中完成 Google 授权。
-
-### 3. 启动服务
-
-```bash
-source start.sh
+python get_token.py    # 首次需要获取 Google OAuth Token
+source install.sh      # 一键安装 Claude CLI + 启动服务
 ```
 
 脚本会自动：
-- 检查并安装依赖
-- 启动 API 服务器
-- 设置环境变量（当前会话 + `/root/.env` 持久化）
+- ✅ 安装 Claude CLI（如果未安装）
+- ✅ 跳过官方登录验证
+- ✅ 检查并安装 Python 依赖
+- ✅ 启动 API 服务器
+- ✅ 配置环境变量（当前会话 + `/root/.env` 持久化）
 
-### 4. 开始使用
+完成后直接运行：
 
 ```bash
-claude  # 直接使用 Claude Code CLI
+claude
+```
+
+### 方式二：手动安装
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/francisAI2025/antigravity-API-Server.git
+cd antigravity-API-Server
+
+# 2. 获取 Google OAuth Token
+python get_token.py
+
+# 3. 启动服务
+source start.sh
+
+# 4. 使用
+claude
 ```
 
 ---
