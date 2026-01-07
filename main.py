@@ -336,11 +336,19 @@ def transform_tools(tools: List[dict]) -> List[dict]:
 
 def claude_to_gemini(claude_request: dict, project_id: str) -> dict:
     """Claude 请求格式 -> Gemini 请求格式"""
+    
+    # 确定目标模型类型
+    model_name = claude_request.get("model", "claude-sonnet-4-5")
+    mapped_model = map_model(model_name)
+    
+    # 判断是否为 Gemini 原生模型 (使用 functionCall) 还是 Claude 模型 (使用文本格式)
+    is_gemini_native = "gemini" in mapped_model.lower()
+    
     gemini_request = {
         "contents": [],
         "generationConfig": {
             "candidateCount": 1,
-            "maxOutputTokens": claude_request.get("max_tokens", 8192),
+            "maxOutputTokens": claude_request.get("max_tokens", 4096),  # 降低默认值以节省额度
             "temperature": claude_request.get("temperature", 1.0),
             "stopSequences": claude_request.get("stop_sequences", [])
         },
@@ -371,8 +379,8 @@ def claude_to_gemini(claude_request: dict, project_id: str) -> dict:
                     "parts": parts
                 }
 
-    # 2. Tools
-    if "tools" in claude_request:
+    # 2. Tools (仅对 Gemini 原生模型)
+    if "tools" in claude_request and is_gemini_native:
         gemini_request["tools"] = transform_tools(claude_request["tools"])
 
     # 3. 预扫描：构建 Tool ID -> Tool Name 映射
@@ -382,7 +390,7 @@ def claude_to_gemini(claude_request: dict, project_id: str) -> dict:
             content = msg["content"]
             if isinstance(content, list):
                 for item in content:
-                    if item["type"] == "tool_use":
+                    if item.get("type") == "tool_use":
                         tool_id_to_name[item["id"]] = item["name"]
 
     # 4. Messages Construction
@@ -395,154 +403,73 @@ def claude_to_gemini(claude_request: dict, project_id: str) -> dict:
             parts.append({"text": content})
         elif isinstance(content, list):
             for item in content:
-                if item["type"] == "text":
+                if item.get("type") == "text":
                     parts.append({"text": item["text"]})
-                elif item["type"] == "image":
+                elif item.get("type") == "image":
                     parts.append({
                         "inlineData": {
                             "mimeType": item["source"]["media_type"],
                             "data": item["source"]["data"]
                         }
                     })
-                elif item["type"] == "tool_use":
-                    # Tool Call
-                    # [CRITICAL] Thinking models requires thought_signature for functionCall
-                    func_call = {
-                        "name": item["name"],
-                        "args": item["input"]
-                    }
-                    
-                    part = {"functionCall": func_call}
-                    
-                    # 尝试注入 thought_signature
-                    sig = get_thought_signature()
-                    if sig:
-                        # 注意：thoughtSignature 是 part 的一级属性，与 functionCall 平级
-                        part["thoughtSignature"] = sig
-                    
-                    parts.append(part)
-
-                elif item["type"] == "tool_result":
-                    # Tool Response
-                    tool_id = item.get("tool_use_id")
-                    tool_name = tool_id_to_name.get(tool_id, "unknown_tool")
-                    
-                    parts.append({
-                        "functionResponse": {
-                            "name": tool_name,
-                            "response": {
-                                "name": tool_name,
-                                "content": item.get("content", "") 
-                            }
+                elif item.get("type") == "tool_use":
+                    # Tool Call - 区分 Gemini 和 Claude 模型
+                    if is_gemini_native:
+                        # Gemini 原生模型: 使用 functionCall
+                        func_call = {
+                            "name": item["name"],
+                            "args": item["input"]
                         }
-                    })
+                        
+                        part = {"functionCall": func_call}
+                        
+                        # 尝试注入 thought_signature (for Thinking models)
+                        sig = get_thought_signature()
+                        if sig:
+                            part["thoughtSignature"] = sig
+                        
+                        parts.append(part)
+                    else:
+                        # Claude 模型: 转换为文本 (简单处理)
+                        parts.append({"text": f"[Tool Call: {item['name']}({item.get('input', {})})]"})
 
-        gemini_request["contents"].append({
-            "role": role,
-            "parts": parts
-        })
+                elif item.get("type") == "tool_result":
+                    # Tool Response - 区分 Gemini 和 Claude 模型  
+                    if is_gemini_native:
+                        # Gemini 原生模型: 使用 functionResponse
+                        tool_id = item.get("tool_use_id")
+                        tool_name = tool_id_to_name.get(tool_id, "unknown_tool")
+                        
+                        parts.append({
+                            "functionResponse": {
+                                "name": tool_name,
+                                "response": {
+                                    "name": tool_name,
+                                    "content": item.get("content", "") 
+                                }
+                            }
+                        })
+                    else:
+                        # Claude 模型: 转换为文本
+                        parts.append({"text": f"[Tool Result: {item.get('content', '')}]"})
+
+        if parts:
+            gemini_request["contents"].append({
+                "role": role,
+                "parts": parts
+            })
     
     # 包装成 Cloud Code API 需要的格式
-    # 注意：前面的代码是转换成 contents，现在需要包装
-    # 由于原始代码结构不同，这里我们直接返回 gemini_request 的内容部分给调用者？
-    # 不，原始 claude_to_gemini 返回的是最终的大对象。
-    
     final_request = {
          "project": project_id,
          "requestId": f"agent-{uuid.uuid4()}",
-         "request": gemini_request, # 这里 gemini_request 对应原始代码的 inner_request
-         "model": map_model(claude_request.get("model", "claude-sonnet-4-5")),
+         "request": gemini_request,
+         "model": mapped_model,
          "userAgent": "antigravity",
          "requestType": "agent"
     }
 
     return final_request
-        role = "model" if msg["role"] == "assistant" else msg["role"]
-        content = msg.get("content", "")
-        
-        parts = []
-        # 处理内容（可能是字符串或数组）
-        if isinstance(content, str):
-            parts = [{"text": content}]
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        parts.append({"text": block.get("text", "")})
-                    elif block.get("type") == "tool_use":
-                        # Assistant 想要调用工具 -> Gemini functionCall
-                        parts.append({
-                            "functionCall": {
-                                "name": block["name"],
-                                "args": block["input"]
-                            }
-                        })
-                    elif block.get("type") == "tool_result":
-                        # Tool 执行结果 -> Gemini functionResponse
-                        # 注意：Gemini 要求 functionResponse 单独作为一条消息或在 user 消息中
-                        parts.append({
-                            "functionResponse": {
-                                "name": block.get("name", "unknown_tool"), # Claude tool_result 通常不带 name，可能需要记录上下文或从 content_block 中推断，这里需要注意
-                                "response": {
-                                    "name": block.get("name", "unknown_tool"),
-                                    "content": block.get("content", "") 
-                                }
-                            }
-                        })
-                        # 对于 Antigravity/CloudCode API，tool_result 通常也是 "user" role
-                else:
-                    parts.append({"text": str(block)})
-        else:
-            parts = [{"text": str(content)}]
-        
-        if parts:
-            # 修正: Gemini 中 functionResponse 应该是 'function' role 或者是 user的一部分?
-            # Cloud Code API 中通常 user 角色发送 functionResponse
-             contents.append({"role": role, "parts": parts})
-
-    # 处理 tool_result 的特殊情况：Claude 中 tool_result 是 user 消息
-    # 我们的循环已经处理了 role 映射
-
-    system_instruction = None
-    if request.get("system"):
-        system_text = request["system"]
-        if isinstance(system_text, list):
-            system_text = "\n".join([b.get("text", "") if isinstance(b, dict) else str(b) for b in system_text])
-        system_instruction = {"parts": [{"text": system_text}]}
-    
-    inner_request = {
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": request.get("max_tokens", 8192),
-            "temperature": request.get("temperature", 1.0),
-        },
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
-        ]
-    }
-    
-    if system_instruction:
-        inner_request["systemInstruction"] = system_instruction
-
-    # 处理 Tools 定义
-    if "tools" in request:
-        inner_request["tools"] = transform_tools(request["tools"])
-        # 强制工具使用模式
-        # inner_request["toolConfig"] = {"functionCallingConfig": {"mode": "AUTO"}}
-    
-    model = map_model(request.get("model", "claude-sonnet-4-20250514"))
-    
-    return {
-        "project": project_id,
-        "requestId": f"agent-{uuid.uuid4()}",
-        "request": inner_request,
-        "model": model,
-        "userAgent": "antigravity",
-        "requestType": "agent"
-    }
 
 def gemini_to_claude(gemini_response: dict, model: str) -> dict:
     """Gemini 响应格式 -> Claude 格式"""
@@ -630,7 +557,8 @@ async def messages(request: ChatRequest):
     access_token = await get_access_token()
     project_id = await get_project_id()
     
-    gemini_body = claude_to_gemini(request.model_dump(), project_id)
+    request_dict = request.model_dump()
+    gemini_body = claude_to_gemini(request_dict, project_id)
     
     method = "streamGenerateContent" if request.stream else "generateContent"
     query = "alt=sse" if request.stream else ""
